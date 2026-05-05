@@ -11,15 +11,20 @@ Terraform module for provisioning a Linux desktop server on Hetzner Cloud.
 - [What Problem Does This Solve?](#what-problem-does-this-solve)
 - [Disclaimer](#disclaimer)
 - [Tested On](#tested-on)
-- [Usage](#usage)
-- [Requirements](#requirements)
-- [Inputs](#inputs)
-- [Outputs](#outputs)
-- [Architecture](#architecture)
+- [Getting Started](#getting-started)
+  - [Prerequisites](#prerequisites)
+  - [Quick Start](#quick-start)
+  - [Connecting After Provisioning](#connecting-after-provisioning)
+- [Module Reference](#module-reference)
+  - [Requirements](#requirements)
+  - [Inputs](#inputs)
+  - [Outputs](#outputs)
+  - [Configuration](#configuration)
 - [Security Considerations](#security-considerations)
+- [Performance & Limitations](#performance--limitations)
 - [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [License](#license)
+- [Documentation](#documentation)
+- [Contributing & License](#contributing--license)
 
 ---
 
@@ -59,18 +64,33 @@ Validated against:
 | Provider | hetznercloud/hcloud >= 1.47 |
 | Location | fsn1, nbg1, hel1 |
 | Image | ubuntu-22.04, ubuntu-24.04 |
-| Server types | cpx21, cpx41, cax41 |
+| Server types | cx22, cpx21, cpx41, cpx51, cax41 |
 
 ---
 
-## Usage
+## Getting Started
+
+### Prerequisites
+
+Before you can use this module, you need:
+
+1. **A Hetzner Cloud project** — create one at [console.hetzner.cloud](https://console.hetzner.cloud/)
+2. **An API token** — generate one in the Hetzner console under Access → API Tokens
+3. **An SSH key** — create one in Hetzner under Access → SSH Keys (or use an existing key name)
+4. **Terraform >= 1.0** installed locally
+
+### Quick Start
+
+**Step 1 — Create the Terraform configuration**
+
+Create a file called `main.tf` in your project directory:
 
 ```hcl
 module "linux_desktop" {
   source  = "DarojaAI/linux-desktop/hcloud"
   version = "1.0.0"
 
-  hcloud_token = var.hcloud_token
+  hcloud_token = "your_hetzner_api_token"
   server_name  = "my-desktop"
   location     = "fsn1"
   server_type  = "cpx41"
@@ -85,31 +105,81 @@ module "linux_desktop" {
 }
 
 output "connection_info" {
-  value = module.linux_desktop.connection_info
+  value     = module.linux_desktop.connection_info
+  sensitive = true
+}
+
+output "ipv4_address" {
+  value = module.linux_desktop.ipv4_address
 }
 ```
 
-**After applying**, SSH into the VM and run [linux-desktop-seed](https://github.com/DarojaAI/linux-desktop-seed) deployment scripts to set up the desktop environment.
+**Step 2 — Initialize and apply**
+
+```bash
+terraform init
+terraform plan
+terraform apply
+```
+
+You'll be prompted to confirm. Type `yes` when ready.
+
+**Step 3 — Verify the server**
+
+After `terraform apply` completes, run:
+
+```bash
+terraform output connection_info
+```
+
+This gives you the SSH command to connect. Verify the server is up:
+
+```bash
+ssh -o StrictHostKeyChecking=no root@<ipv4_address>
+```
+
+**Step 4 — Install the desktop environment**
+
+Once the VM is up, run the linux-desktop-seed deployment scripts:
+
+```bash
+ssh root@<ipv4_address>
+git clone https://github.com/DarojaAI/linux-desktop-seed.git
+cd linux-desktop-seed
+sudo bash deploy-desktop.sh
+```
+
+This installs GNOME, xrdp, VS Code, Claude Code, and everything else. Takes 5–15 minutes.
+
+### Connecting After Provisioning
+
+After the VM is provisioned and desktop environment is installed, connect via RDP:
+
+**From Windows:**
+- Open **Remote Desktop Connection** (search in Start menu)
+- Server: `<ipv4_address>` (port 3389 is used automatically)
+- Username: `desktopuser`
+- Password: your Ubuntu password
+
+**From Android:**
+- Install **Microsoft Remote Desktop** from the Google Play Store
+- Add a new PC with your server IP
+- GNOME is touch-friendly
 
 ---
 
-## Requirements
+## Module Reference
+
+### Requirements
 
 | Resource | Version |
 |---|---|
 | Terraform | >= 1.0 |
 | hetznercloud/hcloud provider | >= 1.47 |
 
-Provider configuration:
-```hcl
-provider "hcloud" {
-  token = var.hcloud_token
-}
-```
+Provider is configured automatically by this module. You only need to pass `hcloud_token`.
 
----
-
-## Inputs
+### Inputs
 
 | Name | Description | Type | Default | Required |
 |---|---|---|---|---|
@@ -123,7 +193,7 @@ provider "hcloud" {
 | `ssh_public_key` | SSH public key content to inject at boot for passwordless access | `string` | `""` | No |
 | `labels` | Key-value pairs to apply as labels to the server. Useful for organization and cost tracking | `map(string)` | `{}` | No |
 
-### Server Type Reference
+#### Server Type Reference
 
 | Type | vCPUs | RAM | Storage | Max Price |
 |---|---|---|---|---|
@@ -136,9 +206,7 @@ provider "hcloud" {
 
 *Prices are approximate. Check [hetzner.com/cloud/pricing](https://www.hetzner.com/cloud/pricing) for current rates.*
 
----
-
-## Outputs
+### Outputs
 
 | Name | Description |
 |---|---|
@@ -149,38 +217,31 @@ provider "hcloud" {
 | `connection_info` | Ready-to-use SSH command. Example: `ssh -o StrictHostKeyChecking=no root@123.456.78.90` |
 | `server_status` | Current server status: `running`, `off`, `creating`, `deleting` |
 
----
+### Configuration
 
-## Architecture
+#### Backend (state storage)
 
-### What this module creates
+This module does **not** include a `backend` block. State management is the consumer's responsibility. Recommended setup:
 
+```hcl
+terraform {
+  backend "s3" {
+    endpoints = {
+      s3 = "https://s3.fra1.cloudprovider.de"
+    }
+    bucket         = "your-terraform-state-bucket"
+    key            = "linux-desktop/terraform.tfstate"
+    region         = "fra1"
+    skip_credentials_validation = true
+    skip_metadata_api_check     = true
+    skip_region_validation      = true
+    skip_requesting_account_id  = true
+    force_path_style            = true
+  }
+}
 ```
-hcloud_server.main (VM)
-├── Public IPv4 (assigned by Hetzner)
-├── Public IPv6 (assigned by Hetzner)
-└── Labels (from var.labels)
-```
 
-### What this module does NOT create
-
-This module only provisions the VM. It does **not** include:
-- Firewall rules (create separately with `hcloud_firewall` resource)
-- Networks or subnets (Hetzner VMs are on a private network by default)
-- DNS records (manage separately)
-- SSH key generation (use existing keys or `tls_private_key`)
-- Post-provisioning setup (use [linux-desktop-seed](https://github.com/DarojaAI/linux-desktop-seed) for that)
-
-### Recommended follow-up
-
-After `terraform apply`, run the linux-desktop-seed deployment scripts to install the desktop environment:
-
-```bash
-ssh root@<ipv4_address>
-git clone https://github.com/DarojaAI/linux-desktop-seed.git
-cd linux-desktop-seed
-sudo bash deploy-desktop.sh
-```
+This separates state from the module. State files contain sensitive data — use encryption and access controls.
 
 ---
 
@@ -190,13 +251,14 @@ sudo bash deploy-desktop.sh
 `hcloud_token` is marked as `sensitive = true` in Terraform state. Protect your state file:
 - Use remote backend with encryption (S3, Terraform Cloud)
 - Never commit `.tfstate` files to version control
+- Rotate tokens periodically via Hetzner console
 
 ### SSH Access
 - Prefer `hetzner_ssh_key_name` or `ssh_keys` over `ssh_public_key` where possible
 - If using `ssh_public_key`, ensure the private key is stored securely
 
 ### Firewall
-This module does not create firewall rules. After provisioning, ensure port 3389 is open for RDP if you plan to use the desktop:
+This module does not create firewall rules. After provisioning, ensure port 3389 is open for RDP if you plan to use the desktop. Example with `hcloud_firewall`:
 
 ```hcl
 resource "hcloud_firewall" "desktop" {
@@ -217,42 +279,82 @@ resource "hcloud_firewall" "desktop" {
   }
 
   apply_to {
-    server = hcloud_server.main.id
+    type = "server"
+    id   = module.linux_desktop.server_id
   }
 }
 ```
 
 ---
 
+## Performance & Limitations
+
+| Metric | Value |
+|---|---|
+| Provision time | 1–3 minutes (Hetzner usually fast, can take longer under load) |
+| Server status check | Immediate via `hcloud_server.main.status` output |
+| Idle cost |取决于 server_type — see pricing table above |
+
+**Known limitations:**
+
+- **No firewall rules** — must be created separately
+- **No multi-region** — this module creates a single server in one location
+- **No high availability** — single VM, single AZ
+- **No automatic backups** — configure via Hetzner backup schedule manually
+- **State not managed** — consumer must configure backend to avoid state loss
+
+---
+
 ## Troubleshooting
 
 ### Server stays in `creating` state
-
-Wait 1-2 minutes. Hetzner provisioning can take time for custom images or under high load.
+Wait 1–2 minutes. Hetzner provisioning can take time for custom images or under high load.
 
 ### `Error: Invalid SSH key`
-
 Ensure the SSH key name in `hetzner_ssh_key_name` exactly matches a key in your Hetzner project. SSH keys are project-scoped, not account-scoped.
 
 ### `Error: Image not found`
-
 Use the exact image slug from Hetzner's available images. Check [docs.hetzner.cloud](https://docs.hetzner.cloud/servers#available-images) for the current list.
 
 ### `terraform apply` fails with 401
-
 Your `hcloud_token` is invalid or expired. Generate a new one at [console.hetzner.cloud](https://console.hetzner.cloud/) → Access → API Tokens.
 
 ### How to import an existing server
-
 If you have a server already running and want to manage it with Terraform:
 
 ```bash
 terraform import hcloud_server.main <SERVER_ID>
 ```
 
+Then run `terraform plan` to verify the imported state matches your configuration.
+
 ---
 
-## Contributing
+## Documentation
+
+| Guide | Who It's For | What It Covers |
+|---|---|---|
+| [linux-desktop-seed](https://github.com/DarojaAI/linux-desktop-seed) | Everyone | Full desktop setup scripts (RDP, GNOME, VS Code, etc.) |
+| [Hetzner Cloud Docs](https://docs.hetzner.cloud/) | Operators | Hetzner API reference, server options, networking |
+| [Terraform Registry](https://registry.terraform.io/providers/hetznercloud/hcloud/latest) | Developers | Hetzner provider documentation |
+
+---
+
+## Contributing & License
+
+### Module Structure
+
+```
+terraform-hcloud-linux-desktop/
+├── main.tf         ← hcloud_server resource
+├── variables.tf    ← all configurable inputs
+├── outputs.tf      ← server connection info
+├── versions.tf     ← terraform and provider version constraints
+├── README.md       ← this file
+└── LICENSE         ← MIT
+```
+
+### Contributing
 
 When updating this module:
 
@@ -260,6 +362,7 @@ When updating this module:
 - Update inputs/outputs tables in this README if variables change
 - Test against a real Hetzner project (use a throwaway project for testing)
 - State is consumer-managed — do not include `backend` blocks in this module
+- Idempotency: `terraform apply` should be safe to run multiple times
 
 ---
 
